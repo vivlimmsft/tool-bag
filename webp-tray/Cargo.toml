@@ -1,0 +1,41 @@
+[package]
+name = "webp-tray"
+version = "0.1.0"
+edition = "2021"
+description = "Watch Downloads for .webp files and convert to PNG/JPEG"
+
+[dependencies]
+tray-icon = "0.21"
+notify = "8"
+notify-debouncer-full = "0.6"
+image = { version = "0.25", default-features = false, features = ["webp", "png", "jpeg", "ico"] }
+trash = "5"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+dirs = "6"
+tauri-winrt-notification = "0.7"
+anyhow = "1"
+log = "0.4"
+flexi_logger = { version = "0.31", default-features = false }
+parking_lot = "0.12"
+unicode-general-category = "1"
+crossbeam-channel = "0.5"
+unicode-segmentation = "1"
+winreg = "0.55"
+
+[build-dependencies]
+embed-resource = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Foundation",
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"
+panic = "abort"

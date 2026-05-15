@@ -1,0 +1,11 @@
+# Build outputs
+/target
+/build
+
+# WiX intermediates
+*.wixpdb
+*.wixobj
+
+# Signing artefacts — never commit a private key
+sign/*.pfx
+*.pfx

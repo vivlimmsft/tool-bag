@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  webp-tray installer.
+  Per-user MSI: installs without elevation into %LOCALAPPDATA%\webp-tray\.
+
+  Important pieces:
+    * UpgradeCode is fixed; bump Version to ship updates and old version is
+      automatically removed.
+    * Start menu shortcut carries the System.AppUserModel.ID property,
+      matching the AUMID set by the binary at startup. Without this, toast
+      notifications attribute to a generic shell instead of "webp-tray".
+    * The "Autostart" feature drops a shortcut into the per-user Startup
+      folder; the user can opt out at install time via the feature tree.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="webp-tray"
+      Manufacturer="vivlim"
+      Version="$(var.Version)"
+      UpgradeCode="9BEEB52C-6616-4D4B-89C9-31910DC5AE66"
+      Scope="perUser"
+      InstallerVersion="500"
+      Compressed="yes">
+
+    <SummaryInformation Description="webp-tray — auto-convert downloaded .webp images" />
+
+    <MajorUpgrade
+        Schedule="afterInstallInitialize"
+        DowngradeErrorMessage="A newer version of webp-tray is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Icon used by Apps & Features and the Start menu / Startup shortcuts.
+         WiX requires the file to have an .ico extension; we point at the
+         multi-resolution one we generated from assets/icon.png. -->
+    <Icon Id="AppIcon.ico" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+
+    <!-- "App removal" niceties: nice icon + support URL in Apps & Features. -->
+    <Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />
+    <Property Id="ARPNOMODIFY" Value="yes" Secure="yes" />
+
+    <!-- Feature tree: just the main payload. Autostart is now managed from
+         the tray menu's "Start at login" checkbox (HKCU\...\Run) so the
+         installer doesn't need its own autostart toggle. -->
+    <Feature Id="Main" Title="webp-tray" Level="1" AllowAbsent="no"
+             Description="Tray app + watcher.">
+      <ComponentGroupRef Id="MainGroup" />
+    </Feature>
+
+    <!-- Install location: %LOCALAPPDATA%\webp-tray\webp-tray.exe -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLDIR" Name="webp-tray" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <ComponentGroup Id="MainGroup" Directory="INSTALLDIR">
+      <Component Id="MainExe" Guid="6E15F2D1-9C4A-4E3B-8D5A-1C2E3F4A5B6C">
+        <File Id="WebpTrayExe" Source="$(var.ExePath)" KeyPath="yes" />
+        <!-- ARP icon source. -->
+        <RegistryKey Root="HKCU" Key="Software\vivlim\webp-tray">
+          <RegistryValue Name="InstallDir" Type="string" Value="[INSTALLDIR]" />
+        </RegistryKey>
+      </Component>
+      <Component Id="StartMenuShortcut" Guid="A1B2C3D4-1234-4567-89AB-CDEF01234567"
+                 Directory="ProgramMenuFolder">
+        <Shortcut Id="StartMenuLink"
+                  Name="webp-tray"
+                  Description="Watch Downloads for .webp files and convert them"
+                  Target="[INSTALLDIR]webp-tray.exe"
+                  WorkingDirectory="INSTALLDIR"
+                  Icon="AppIcon.ico"
+                  IconIndex="0">
+          <!-- This is the magic that makes toast notifications attribute correctly. -->
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="vivlim.WebpTray" />
+        </Shortcut>
+        <RemoveFolder Id="CleanupStartMenu" Directory="ProgramMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\vivlim\webp-tray"
+                       Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Package>
+</Wix>

@@ -1,0 +1,105 @@
+name: webp-tray ci
+
+# Fast feedback for every push/PR that touches webp-tray. The release workflow
+# (webp-tray-release.yml) handles publishing on tag pushes; this one just
+# proves the code compiles, tests pass, and the MSI can be assembled.
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "webp-tray/**"
+      - ".github/workflows/webp-tray-ci.yml"
+    tags-ignore:
+      - "webp-tray-v*"   # release workflow handles these
+  pull_request:
+    paths:
+      - "webp-tray/**"
+      - ".github/workflows/webp-tray-ci.yml"
+
+# Only need read access; we don't publish anything from CI.
+permissions:
+  contents: read
+
+# If a new commit lands on the same branch/PR while CI is mid-flight, cancel
+# the in-flight run — we only care about the latest.
+concurrency:
+  group: webp-tray-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: webp-tray
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: webp-tray
+
+      # Style/correctness gates first — fail fast before the slow MSI build.
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --release
+
+      # CI uses a throwaway self-signed cert generated fresh per job. This
+      # exercises the full sign+verify path (so signing breakage gets caught
+      # in PR review) without ever needing access to the release secret.
+      # Forks can still build PRs; only release tags use the real cert.
+      - name: Generate ephemeral signing cert
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject "CN=webp-tray ci, O=ephemeral" `
+            -KeyUsage DigitalSignature `
+            -KeyAlgorithm RSA `
+            -KeyLength 2048 `
+            -HashAlgorithm SHA256 `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -NotAfter (Get-Date).AddDays(1)
+          "WEBP_TRAY_SIGN_THUMBPRINT=$($cert.Thumbprint)" | Out-File -Append $env:GITHUB_ENV
+          Write-Host "ephemeral cert thumbprint: $($cert.Thumbprint)"
+
+      # Smoke-build the MSI with a fixed dummy version. Catches WiX errors,
+      # missing assets, and signing breakage before release tag time.
+      - name: Build & sign MSI (smoke)
+        run: ./build-installer.ps1 -Version "0.0.0-ci"
+
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          $exe = "target\release\webp-tray.exe"
+          $msi = "build\webp-tray-0.0.0-ci.msi"
+          foreach ($f in @($exe, $msi)) {
+            $sig = Get-AuthenticodeSignature $f
+            Write-Host "$f -> $($sig.Status) ($($sig.SignerCertificate.Subject))"
+            # NotTrusted is fine — our ephemeral cert isn't in any trust root.
+            # We just want a signature to be present and structurally valid.
+            if ($sig.Status -notin 'Valid','UnknownError','NotTrusted') {
+              throw "signature on $f is $($sig.Status): $($sig.StatusMessage)"
+            }
+            if (-not $sig.SignerCertificate) {
+              throw "no signer certificate on $f"
+            }
+          }
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webp-tray-ci-msi
+          path: webp-tray/build/webp-tray-0.0.0-ci.msi
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,5 @@
+// Win32 resource script. Resource ID 1 maps to the IDI_APPLICATION default
+// position so Windows uses this icon as the .exe's representative icon
+// (Explorer, taskbar, alt-tab) and our tray code can load it via
+// Icon::from_resource(Some(1)).
+1 ICON "webp-tray.ico"
