@@ -33,6 +33,11 @@ jobs:
       run:
         working-directory: webp-tray
         shell: pwsh
+    env:
+      # CI signs with the same real cert as release. Where the runner-side
+      # decoded PFX will land; picked up by sign\sign.ps1 via env.
+      WEBP_TRAY_SIGN_PFX: ${{ github.workspace }}\webp-tray\sign\ci.pfx
+      WEBP_TRAY_SIGN_PFX_PASSWORD: ${{ secrets.WEBP_TRAY_SIGN_PFX_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -54,24 +59,26 @@ jobs:
       - name: cargo test
         run: cargo test --release
 
-      # CI uses a throwaway self-signed cert generated fresh per job. This
-      # exercises the full sign+verify path (so signing breakage gets caught
-      # in PR review) without ever needing access to the release secret.
-      # Forks can still build PRs; only release tags use the real cert.
-      - name: Generate ephemeral signing cert
+      # Decode the same PFX the release workflow uses. Secrets aren't
+      # available to PRs from forks, so this step (and signing as a whole)
+      # will fail those runs — that's the explicit tradeoff the user asked
+      # for over the previous ephemeral-cert path.
+      - name: Decode signing PFX
         shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.WEBP_TRAY_SIGN_PFX_BASE64 }}
         run: |
-          $cert = New-SelfSignedCertificate `
-            -Type CodeSigningCert `
-            -Subject "CN=webp-tray ci, O=ephemeral" `
-            -KeyUsage DigitalSignature `
-            -KeyAlgorithm RSA `
-            -KeyLength 2048 `
-            -HashAlgorithm SHA256 `
-            -CertStoreLocation Cert:\CurrentUser\My `
-            -NotAfter (Get-Date).AddDays(1)
-          "WEBP_TRAY_SIGN_THUMBPRINT=$($cert.Thumbprint)" | Out-File -Append $env:GITHUB_ENV
-          Write-Host "ephemeral cert thumbprint: $($cert.Thumbprint)"
+          if ([string]::IsNullOrWhiteSpace($env:PFX_BASE64)) {
+            throw "WEBP_TRAY_SIGN_PFX_BASE64 secret is not set; cannot sign"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WEBP_TRAY_SIGN_PFX_PASSWORD)) {
+            throw "WEBP_TRAY_SIGN_PFX_PASSWORD secret is not set; cannot sign"
+          }
+          [IO.File]::WriteAllBytes(
+            $env:WEBP_TRAY_SIGN_PFX,
+            [Convert]::FromBase64String($env:PFX_BASE64)
+          )
+          Write-Host "PFX decoded to $env:WEBP_TRAY_SIGN_PFX ($((Get-Item $env:WEBP_TRAY_SIGN_PFX).Length) bytes)"
 
       # Smoke-build the MSI with a fixed dummy version. Catches WiX errors,
       # missing assets, and signing breakage before release tag time.
@@ -86,14 +93,26 @@ jobs:
           foreach ($f in @($exe, $msi)) {
             $sig = Get-AuthenticodeSignature $f
             Write-Host "$f -> $($sig.Status) ($($sig.SignerCertificate.Subject))"
-            # NotTrusted is fine — our ephemeral cert isn't in any trust root.
-            # We just want a signature to be present and structurally valid.
-            if ($sig.Status -notin 'Valid','UnknownError','NotTrusted') {
+            # Valid (real cert with a trusted chain on the runner) and
+            # UnknownError (chain not in the runner's trust store, but
+            # signature applied) are both acceptable — we just want to
+            # confirm a signer cert is attached.
+            if ($sig.Status -notin 'Valid','UnknownError') {
               throw "signature on $f is $($sig.Status): $($sig.StatusMessage)"
             }
             if (-not $sig.SignerCertificate) {
               throw "no signer certificate on $f"
             }
+          }
+
+      # Always wipe the decoded PFX even if a prior step failed.
+      - name: Clean up PFX
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path $env:WEBP_TRAY_SIGN_PFX) {
+            Remove-Item -Force $env:WEBP_TRAY_SIGN_PFX
+            Write-Host "removed $env:WEBP_TRAY_SIGN_PFX"
           }
 
       - name: Upload MSI artifact
